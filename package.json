@@ -2,6 +2,11 @@
   "name": "vaiz-mcp",
   "version": "0.1.2",
   "description": "MCP (Model Context Protocol) client for Vaiz - connect Cursor/Claude to your Vaiz workspace",
+  "homepage": "https://vaiz.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vaizcom/vaiz-mcp"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
@@ -36,9 +41,5 @@
   "files": [
     "dist",
     "README.md"
-  ],
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/vaiz/vaiz-mcp"
-  }
+  ]
 }
