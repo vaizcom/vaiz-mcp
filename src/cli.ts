@@ -1,6 +1,17 @@
 #!/usr/bin/env node
 
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { createVaizMCPProxyServer } from './proxy-server.js';
+
+function getVersion(): string {
+  try {
+    const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
+    return pkg.version;
+  } catch {
+    return 'unknown';
+  }
+}
 
 function printHelp(): void {
   console.log(`
@@ -49,7 +60,7 @@ Or after global installation:
 }
 
 function printVersion(): void {
-  console.log('vaiz-mcp v0.1.0');
+  console.log(`vaiz-mcp v${getVersion()}`);
 }
 
 function main(): void {

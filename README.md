@@ -21,7 +21,7 @@ npx vaiz-mcp
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `VAIZ_API_TOKEN` | ✅ | Your Vaiz API key (Bearer token) |
-| `VAIZ_SPACE_ID` | ✅ | Your Vaiz Space ID |
+| `VAIZ_SPACE_ID` | ❌ | Your Vaiz Space ID |
 | `VAIZ_API_URL` | ❌ | MCP API URL (default: `https://api.vaiz.com/mcp`) |
 | `VAIZ_DEBUG` | ❌ | Set to `true` for debug output to stderr |
 
@@ -97,10 +97,10 @@ To enable debug output, add the `VAIZ_DEBUG` variable:
 {
   "mcpServers": {
     "vaiz": {
-      "command": "vaiz-mcp",
+      "command": "npx",
+      "args": ["vaiz-mcp"],
       "env": {
         "VAIZ_API_TOKEN": "your-api-key",
-        "VAIZ_SPACE_ID": "your-space-id",
         "VAIZ_DEBUG": "true"
       }
     }
