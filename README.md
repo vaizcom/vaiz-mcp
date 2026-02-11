@@ -20,10 +20,10 @@ npx vaiz-mcp
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `VAIZ_API_TOKEN` | ✅ | Your Vaiz API key (Bearer token) |
-| `VAIZ_SPACE_ID` | ❌ | Your Vaiz Space ID |
-| `VAIZ_API_URL` | ❌ | MCP API URL (default: `https://api.vaiz.com/mcp`) |
-| `VAIZ_DEBUG` | ❌ | Set to `true` for debug output to stderr |
+| `VAIZ_API_TOKEN` | Yes | Your Vaiz API key (Bearer token) |
+| `VAIZ_SPACE_ID` | No | Your Vaiz Space ID |
+| `VAIZ_API_URL` | No | MCP API URL (default: `https://api.vaiz.com/mcp`) |
+| `VAIZ_DEBUG` | No | Set to `true` for debug output to stderr |
 
 ### Cursor Configuration
 
@@ -34,7 +34,7 @@ Create or edit `~/.cursor/mcp.json`:
   "mcpServers": {
     "vaiz": {
       "command": "npx",
-      "args": ["vaiz-mcp"],
+      "args": ["vaiz-mcp@latest"],
       "env": {
         "VAIZ_API_TOKEN": "your-api-key",
         "VAIZ_SPACE_ID": "your-space-id"
@@ -50,7 +50,7 @@ Or after global installation (`npm install -g vaiz-mcp`):
 {
   "mcpServers": {
     "vaiz": {
-      "command": "vaiz-mcp",
+      "command": "vaiz-mcp@latest",
       "env": {
         "VAIZ_API_TOKEN": "your-api-key",
         "VAIZ_SPACE_ID": "your-space-id"
@@ -69,7 +69,7 @@ Add to `claude_desktop_config.json`:
   "mcpServers": {
     "vaiz": {
       "command": "npx",
-      "args": ["vaiz-mcp"],
+      "args": ["vaiz-mcp@latest"],
       "env": {
         "VAIZ_API_TOKEN": "your-api-key",
         "VAIZ_SPACE_ID": "your-space-id"
@@ -98,7 +98,7 @@ To enable debug output, add the `VAIZ_DEBUG` variable:
   "mcpServers": {
     "vaiz": {
       "command": "npx",
-      "args": ["vaiz-mcp"],
+      "args": ["vaiz-mcp@latest"],
       "env": {
         "VAIZ_API_TOKEN": "your-api-key",
         "VAIZ_DEBUG": "true"
