@@ -11,7 +11,7 @@ Usage:
 
 Environment Variables:
   VAIZ_API_TOKEN    Required. Your Vaiz API key (Bearer token)
-  VAIZ_SPACE_ID   Required. Your Vaiz Space ID
+  VAIZ_SPACE_ID   Optional. Your Vaiz Space ID
   VAIZ_API_URL    Optional. Vaiz MCP API URL (default: https://api.vaiz.com/mcp)
   VAIZ_DEBUG      Optional. Set to 'true' to enable debug logging to stderr
 
@@ -68,12 +68,6 @@ function main(): void {
   // Check for required environment variables
   if (!process.env.VAIZ_API_TOKEN) {
     console.error('Error: VAIZ_API_TOKEN environment variable is required');
-    console.error('Run "vaiz-mcp --help" for usage information');
-    process.exit(1);
-  }
-
-  if (!process.env.VAIZ_SPACE_ID) {
-    console.error('Error: VAIZ_SPACE_ID environment variable is required');
     console.error('Run "vaiz-mcp --help" for usage information');
     process.exit(1);
   }

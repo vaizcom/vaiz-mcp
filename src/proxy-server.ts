@@ -8,7 +8,7 @@ const DEFAULT_API_URL = 'https://api.vaiz.com/mcp';
  */
 export class VaizMCPProxyServer {
   private apiKey: string;
-  private spaceId: string;
+  private spaceId: string | undefined;
   private apiUrl: string;
   private sessionId: string | null = null;
   private rl: readline.Interface | null = null;
@@ -17,7 +17,7 @@ export class VaizMCPProxyServer {
 
   constructor(config: VaizConfig & { debug?: boolean } = {}) {
     this.apiKey = config.apiKey || process.env.VAIZ_API_TOKEN || '';
-    this.spaceId = config.spaceId || process.env.VAIZ_SPACE_ID || '';
+    this.spaceId = config.spaceId || process.env.VAIZ_SPACE_ID || undefined;
     this.apiUrl = config.apiUrl || process.env.VAIZ_API_URL || DEFAULT_API_URL;
     this.debug = config.debug || process.env.VAIZ_DEBUG === 'true';
 
@@ -28,12 +28,6 @@ export class VaizMCPProxyServer {
       process.exit(1);
     }
 
-    if (!this.spaceId) {
-      this.logError(
-        'Vaiz Space ID is required. Set VAIZ_SPACE_ID environment variable.'
-      );
-      process.exit(1);
-    }
   }
 
   private log(message: string): void {
@@ -49,7 +43,7 @@ export class VaizMCPProxyServer {
   private getHeaders(): Record<string, string> {
     return {
       'Authorization': `Bearer ${this.apiKey}`,
-      'Current-Space-Id': this.spaceId,
+      ...(this.spaceId ? { 'Current-Space-Id': this.spaceId } : {}),
       'Content-Type': 'application/json',
       'Accept': 'application/json, text/event-stream',
       ...(this.sessionId ? { 'Mcp-Session-Id': this.sessionId } : {}),
@@ -207,7 +201,7 @@ export class VaizMCPProxyServer {
   start(): void {
     this.log(`Starting Vaiz MCP proxy server`);
     this.log(`API URL: ${this.apiUrl}`);
-    this.log(`Space ID: ${this.spaceId}`);
+    this.log(`Space ID: ${this.spaceId ?? '(not set)'}`);
 
     this.rl = readline.createInterface({
       input: process.stdin,
