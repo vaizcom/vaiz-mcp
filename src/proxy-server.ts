@@ -172,21 +172,20 @@ export class VaizMCPProxyServer {
       },
     };
 
-    const initHeaders = {
-      'Authorization': `Bearer ${this.apiKey}`,
-      ...(this.spaceId ? { 'Current-Space-Id': this.spaceId } : {}),
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-    };
-
     const response = await fetch(this.apiUrl, {
       method: 'POST',
-      headers: initHeaders,
+      headers: {
+        'Authorization': `Bearer ${this.apiKey}`,
+        ...(this.spaceId ? { 'Current-Space-Id': this.spaceId } : {}),
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/event-stream',
+      },
       body: JSON.stringify(initRequest),
     });
 
     if (!response.ok) {
-      this.logError(`Re-init HTTP ${response.status}`);
+      const body = await response.text().catch(() => '');
+      this.logError(`Re-init HTTP ${response.status}: ${body.slice(0, 200)}`);
       return false;
     }
 
@@ -200,11 +199,16 @@ export class VaizMCPProxyServer {
       const contentType = response.headers.get('content-type') || '';
       if (contentType.includes('text/event-stream')) {
         const text = await response.text();
-        const match = text.match(/^data:\s*(.+?)[\r\n]/m);
-        if (match) {
-          const parsed = JSON.parse(match[1].trim()) as MCPResponse;
-          if (parsed.result) {
-            this.responseCache.set('initialize', parsed);
+        for (const line of text.split('\n')) {
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6).trim();
+            if (data) {
+              const parsed = JSON.parse(data) as MCPResponse;
+              if (parsed.result) {
+                this.responseCache.set('initialize', parsed);
+              }
+              break;
+            }
           }
         }
       } else {
@@ -217,10 +221,10 @@ export class VaizMCPProxyServer {
       this.logWarn(`Re-init: response parse error: ${err instanceof Error ? err.message : err}`);
     }
 
-    // Fire notifications/initialized with the NEW session ID
+    // Fire notifications/initialized using standard headers with the NEW session ID
     await fetch(this.apiUrl, {
       method: 'POST',
-      headers: { ...initHeaders, 'Mcp-Session-Id': this.sessionId || '' },
+      headers: this.getHeaders(),
       body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
     }).catch(() => {});
 
