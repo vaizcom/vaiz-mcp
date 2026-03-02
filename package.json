@@ -1,6 +1,6 @@
 {
   "name": "vaiz-mcp",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "MCP (Model Context Protocol) client for Vaiz - connect Cursor/Claude to your Vaiz workspace",
   "homepage": "https://vaiz.com",
   "repository": {
