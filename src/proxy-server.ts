@@ -2,7 +2,7 @@ import * as readline from 'readline';
 import type { VaizConfig, MCPRequest, MCPResponse, MCPNotification } from './types.js';
 
 const DEFAULT_API_URL = 'https://api.vaiz.com/mcp';
-const MAX_RETRIES = 3;
+const MAX_RETRIES = 5;
 const MAX_RETRIES_429 = 6;
 const RETRY_DELAY_MS = 1000;
 const RETRY_DELAY_429_MS = 3000;
@@ -172,9 +172,16 @@ export class VaizMCPProxyServer {
       },
     };
 
+    const initHeaders = {
+      'Authorization': `Bearer ${this.apiKey}`,
+      ...(this.spaceId ? { 'Current-Space-Id': this.spaceId } : {}),
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    };
+
     const response = await fetch(this.apiUrl, {
       method: 'POST',
-      headers: this.getHeaders(),
+      headers: initHeaders,
       body: JSON.stringify(initRequest),
     });
 
@@ -189,20 +196,36 @@ export class VaizMCPProxyServer {
       this.log(`New session: ${newSessionId}`);
     }
 
-    const result = await response.json() as MCPResponse;
-    if (result.result) {
-      this.responseCache.set('initialize', result);
+    try {
+      const contentType = response.headers.get('content-type') || '';
+      if (contentType.includes('text/event-stream')) {
+        const text = await response.text();
+        const match = text.match(/^data:\s*(.+?)[\r\n]/m);
+        if (match) {
+          const parsed = JSON.parse(match[1].trim()) as MCPResponse;
+          if (parsed.result) {
+            this.responseCache.set('initialize', parsed);
+          }
+        }
+      } else {
+        const result = await response.json() as MCPResponse;
+        if (result.result) {
+          this.responseCache.set('initialize', result);
+        }
+      }
+    } catch (err) {
+      this.logWarn(`Re-init: response parse error: ${err instanceof Error ? err.message : err}`);
     }
 
-    // Fire notifications/initialized
+    // Fire notifications/initialized with the NEW session ID
     await fetch(this.apiUrl, {
       method: 'POST',
-      headers: this.getHeaders(),
+      headers: { ...initHeaders, 'Mcp-Session-Id': this.sessionId || '' },
       body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
     }).catch(() => {});
 
     this.initialized = true;
-    this.log('Session re-initialized OK');
+    this.logWarn('Session re-initialized OK');
     return true;
   }
 
@@ -276,12 +299,14 @@ export class VaizMCPProxyServer {
               const ok = await this.reinitializeSession();
               if (ok) {
                 this.logWarn('Session re-initialized, retrying request');
-                lastError = `HTTP ${response.status}`;
-                continue;
+              } else {
+                this.logWarn('Re-init failed, will retry');
               }
-            } catch {}
-            lastError = `HTTP ${response.status}: session re-init failed`;
-            break;
+            } catch {
+              this.logWarn('Re-init threw, will retry');
+            }
+            lastError = `HTTP ${response.status}`;
+            continue;
           }
 
           // Non-retryable
