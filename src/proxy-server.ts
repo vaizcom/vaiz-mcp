@@ -3,7 +3,10 @@ import type { VaizConfig, MCPRequest, MCPResponse, MCPNotification } from './typ
 
 const DEFAULT_API_URL = 'https://api.vaiz.com/mcp';
 const MAX_RETRIES = 3;
+const MAX_RETRIES_429 = 6;
 const RETRY_DELAY_MS = 1000;
+const RETRY_DELAY_429_MS = 3000;
+const MAX_RETRY_DELAY_MS = 10000;
 const HEALTH_CHECK_INTERVAL_MS = 5000;
 
 /**
@@ -100,7 +103,7 @@ export class VaizMCPProxyServer {
   }
 
   private isRetryableStatus(status: number): boolean {
-    return status >= 500 || status === 429;
+    return status >= 500;
   }
 
   // ── health check & recovery ──────────────────────────────
@@ -214,11 +217,12 @@ export class VaizMCPProxyServer {
     }
 
     let lastError: string | undefined;
+    let maxAttempts = MAX_RETRIES;
 
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    for (let attempt = 0; attempt <= maxAttempts; attempt++) {
       if (attempt > 0) {
         const delay = RETRY_DELAY_MS * Math.pow(2, attempt - 1);
-        this.log(`  retry ${attempt}/${MAX_RETRIES} after ${delay}ms`);
+        this.log(`  retry ${attempt}/${maxAttempts} after ${delay}ms`);
         await this.sleep(delay);
       }
 
@@ -241,14 +245,32 @@ export class VaizMCPProxyServer {
           const body = await response.text();
           this.logError(`  HTTP ${response.status}: ${body.slice(0, 200)}`);
 
-          // Retryable server error
-          if (this.isRetryableStatus(response.status) && attempt < MAX_RETRIES) {
+          // 429 Too Many Sessions — server needs time to reclaim dead sessions.
+          // Use Retry-After header hint + jitter, allow more retries.
+          if (response.status === 429) {
+            maxAttempts = MAX_RETRIES_429;
+            if (attempt < maxAttempts) {
+              const retryAfter = parseInt(response.headers.get('Retry-After') || '', 10);
+              const baseDelay = (retryAfter && retryAfter > 0) ? retryAfter * 1000 : RETRY_DELAY_429_MS;
+              const jitter = Math.random() * 1000;
+              const delay = Math.min(baseDelay + jitter, MAX_RETRY_DELAY_MS);
+              this.log(`  429 — waiting ${Math.round(delay)}ms before retry (Retry-After: ${retryAfter || 'none'})`);
+              await this.sleep(delay);
+              lastError = `HTTP 429`;
+              continue;
+            }
+            lastError = `HTTP 429: all session slots busy`;
+            break;
+          }
+
+          // Retryable server error (5xx)
+          if (this.isRetryableStatus(response.status) && attempt < maxAttempts) {
             lastError = `HTTP ${response.status}`;
             continue;
           }
 
           // Possibly stale session — re-initialize to get new session ID, then retry
-          if ((response.status === 400 || response.status === 404) && attempt < MAX_RETRIES) {
+          if ((response.status === 400 || response.status === 404) && attempt < maxAttempts) {
             this.logWarn('Possible stale session — re-initializing');
             try {
               const ok = await this.reinitializeSession();
