@@ -152,6 +152,10 @@ npm run build
 npm run dev
 ```
 
+## Platforms
+
+[![LobeHub](https://lobehub.com/badge/mcp/vaiz-vaiz-mcp)](https://lobehub.com/mcp/vaiz-vaiz-mcp)
+
 ## License
 
 MIT
