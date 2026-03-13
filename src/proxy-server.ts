@@ -29,12 +29,13 @@ function getPackageMeta() {
 }
 
 const DEFAULT_API_URL = 'https://api.vaiz.com/mcp';
-const MAX_RETRIES = 5;
+const MAX_RETRIES = 2;
 const MAX_RETRIES_429 = 6;
-const RETRY_DELAY_MS = 1000;
+const RETRY_DELAY_MS = 500;
 const RETRY_DELAY_429_MS = 3000;
 const MAX_RETRY_DELAY_MS = 10000;
-const HEALTH_CHECK_INTERVAL_MS = 5000;
+const FETCH_TIMEOUT_MS = 5000;
+
 
 function mergeByName<T extends { name: string }>(
   hardcoded: T[],
@@ -82,7 +83,6 @@ export class VaizMCPProxyServer {
   private lastInitParams: Record<string, unknown> | undefined;
 
   private apiHealthy = true;
-  private healthCheckTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(config: VaizConfig & { debug?: boolean } = {}) {
     this.apiKey = config.apiKey || process.env.VAIZ_API_TOKEN || '';
@@ -170,34 +170,7 @@ export class VaizMCPProxyServer {
     if (!this.apiHealthy) return;
     this.apiHealthy = false;
     this.sessionId = null;
-    this.logWarn('API is DOWN — starting background health check');
-    this.startHealthCheck();
-  }
-
-  private startHealthCheck(): void {
-    if (this.healthCheckTimer) return;
-
-    this.healthCheckTimer = setInterval(async () => {
-      this.log('Health check: pinging API...');
-      try {
-        const ok = await this.reinitializeSession();
-        if (ok) {
-          this.apiHealthy = true;
-          this.stopHealthCheck();
-          this.logWarn('API is UP — notifying client to refresh tools');
-          this.mcpServer.sendToolListChanged();
-        }
-      } catch {
-        this.log('Health check: API still unreachable');
-      }
-    }, HEALTH_CHECK_INTERVAL_MS);
-  }
-
-  private stopHealthCheck(): void {
-    if (this.healthCheckTimer) {
-      clearInterval(this.healthCheckTimer);
-      this.healthCheckTimer = null;
-    }
+    this.logWarn('API is DOWN — will recover on next successful request');
   }
 
   private async reinitializeSession(): Promise<boolean> {
@@ -224,6 +197,7 @@ export class VaizMCPProxyServer {
         'Accept': 'application/json, text/event-stream',
       },
       body: JSON.stringify(initRequest),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
 
     if (!response.ok) {
@@ -281,6 +255,12 @@ export class VaizMCPProxyServer {
     method: string,
     params?: Record<string, unknown>,
   ): Promise<unknown> {
+    if (!this.apiHealthy) {
+      const cached = this.responseCache.get(method);
+      if (cached) return cached;
+      throw new Error('API unavailable');
+    }
+
     const request: MCPRequest = {
       jsonrpc: '2.0',
       id: `proxy_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -307,6 +287,7 @@ export class VaizMCPProxyServer {
           method: 'POST',
           headers: this.getHeaders(),
           body: JSON.stringify(request),
+          signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
         });
 
         const sid = response.headers.get('Mcp-Session-Id');
@@ -374,7 +355,6 @@ export class VaizMCPProxyServer {
         // ── Success ──
         if (!this.apiHealthy) {
           this.apiHealthy = true;
-          this.stopHealthCheck();
           this.logWarn('API is back (via successful request)');
           if (method !== 'tools/list') {
             this.mcpServer.sendToolListChanged();
@@ -418,10 +398,7 @@ export class VaizMCPProxyServer {
     this.markApiDown();
 
     const cached = this.responseCache.get(method);
-    if (cached) {
-      this.logWarn(`Serving cached ${method} (API unavailable)`);
-      return cached;
-    }
+    if (cached) return cached;
 
     throw new Error(`API unavailable: ${lastError}`);
   }
@@ -492,7 +469,6 @@ export class VaizMCPProxyServer {
         const remoteTools = result?.tools ?? [];
         return { tools: mergeByName(VAIZ_TOOLS, remoteTools) };
       } catch {
-        this.logWarn('tools/list: using hardcoded + cached tools');
         const cached = this.responseCache.get('tools/list') as {
           tools?: Tool[];
         } | undefined;
@@ -517,7 +493,6 @@ export class VaizMCPProxyServer {
         const remotePrompts = result?.prompts ?? [];
         return { prompts: mergeByName(VAIZ_PROMPTS, remotePrompts) };
       } catch {
-        this.logWarn('prompts/list: using hardcoded + cached prompts');
         const cached = this.responseCache.get('prompts/list') as {
           prompts?: Prompt[];
         } | undefined;
@@ -550,7 +525,6 @@ export class VaizMCPProxyServer {
           const remoteResources = result?.resources ?? [];
           return { resources: mergeByUri(VAIZ_RESOURCES, remoteResources) };
         } catch {
-          this.logWarn('resources/list: using hardcoded + cached resources');
           const cached = this.responseCache.get('resources/list') as {
             resources?: Resource[];
           } | undefined;
@@ -602,7 +576,6 @@ export class VaizMCPProxyServer {
   }
 
   async stop(): Promise<void> {
-    this.stopHealthCheck();
     await this.mcpServer.close();
   }
 }
