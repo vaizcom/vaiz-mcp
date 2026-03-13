@@ -1,5 +1,32 @@
-import * as readline from 'readline';
-import type { VaizConfig, MCPRequest, MCPResponse, MCPNotification } from './types.js';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import {
+  ListToolsRequestSchema,
+  CallToolRequestSchema,
+  ListPromptsRequestSchema,
+  GetPromptRequestSchema,
+  ListResourcesRequestSchema,
+  ReadResourceRequestSchema,
+} from '@modelcontextprotocol/sdk/types.js';
+import type { Tool, Prompt, Resource } from '@modelcontextprotocol/sdk/types.js';
+import type { VaizConfig, MCPRequest, MCPResponse } from './types.js';
+import { VAIZ_TOOLS } from './tools.js';
+import { VAIZ_PROMPTS } from './prompts.js';
+import { VAIZ_RESOURCES } from './resources.js';
+
+function getPackageMeta() {
+  try {
+    const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
+    return {
+      version: pkg.version,
+      name: pkg.name,
+    };
+  } catch {
+    return { version: 'unknown', name: 'unknown' };
+  }
+}
 
 const DEFAULT_API_URL = 'https://api.vaiz.com/mcp';
 const MAX_RETRIES = 5;
@@ -9,12 +36,35 @@ const RETRY_DELAY_429_MS = 3000;
 const MAX_RETRY_DELAY_MS = 10000;
 const HEALTH_CHECK_INTERVAL_MS = 5000;
 
+function mergeByName<T extends { name: string }>(
+  hardcoded: T[],
+  remote: T[],
+): T[] {
+  const map = new Map<string, T>();
+  for (const item of hardcoded) map.set(item.name, item);
+  for (const item of remote) map.set(item.name, item);
+  return [...map.values()];
+}
+
+function mergeByUri(
+  hardcoded: Resource[],
+  remote: Resource[],
+): Resource[] {
+  const map = new Map<string, Resource>();
+  for (const item of hardcoded) map.set(item.uri, item);
+  for (const item of remote) map.set(item.uri, item);
+  return [...map.values()];
+}
+
 /**
  * MCP Proxy Server that forwards stdio JSON-RPC messages to Vaiz HTTP MCP API.
  *
+ * Uses the official MCP SDK with explicit handler registrations so that static
+ * analysers (e.g. LobeHub) can discover tool / prompt definitions in source.
+ *
  * Resilience strategy:
  * - Retry with exponential backoff on transient errors
- * - Cache tools/list responses; NEVER return an error for tools/list
+ * - Cache tools/list and prompts/list responses
  * - Background health check when API is down
  * - Re-initialize session + send notifications/tools/list_changed on recovery
  */
@@ -23,17 +73,14 @@ export class VaizMCPProxyServer {
   private spaceId: string | undefined;
   private apiUrl: string;
   private sessionId: string | null = null;
-  private rl: readline.Interface | null = null;
-  private initialized = false;
   private debug: boolean;
 
-  // Response cache for tools/list and initialize
-  private responseCache: Map<string, MCPResponse> = new Map();
+  private mcpServer: McpServer;
+  private transport: StdioServerTransport | null = null;
 
-  // Store original initialize params for session re-initialization
+  private responseCache: Map<string, unknown> = new Map();
   private lastInitParams: Record<string, unknown> | undefined;
 
-  // Health check / API state
   private apiHealthy = true;
   private healthCheckTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -45,10 +92,23 @@ export class VaizMCPProxyServer {
 
     if (!this.apiKey) {
       this.logError(
-        'Vaiz API key is required. Set VAIZ_API_TOKEN environment variable.'
+        'Vaiz API key is required. Set VAIZ_API_TOKEN environment variable.',
       );
       process.exit(1);
     }
+
+    this.mcpServer = new McpServer(
+      getPackageMeta(),
+      {
+        capabilities: {
+          tools: {},
+          prompts: {},
+          resources: {},
+        },
+      },
+    );
+
+    this.registerHandlers();
   }
 
   // ── logging ──────────────────────────────────────────────
@@ -59,7 +119,6 @@ export class VaizMCPProxyServer {
     }
   }
 
-  /** Always logged (not just in debug mode) */
   private logWarn(message: string): void {
     process.stderr.write(`[vaiz-mcp] WARN: ${message}\n`);
   }
@@ -68,7 +127,7 @@ export class VaizMCPProxyServer {
     process.stderr.write(`[vaiz-mcp] ERROR: ${message}\n`);
   }
 
-  // ── helpers ──────────────────────────────────────────────
+  // ── HTTP helpers ─────────────────────────────────────────
 
   private getHeaders(): Record<string, string> {
     return {
@@ -80,12 +139,6 @@ export class VaizMCPProxyServer {
     };
   }
 
-  private sendResponse(response: MCPResponse | MCPNotification): void {
-    const json = JSON.stringify(response);
-    process.stdout.write(json + '\n');
-    this.log(`→ ${json}`);
-  }
-
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
@@ -94,10 +147,15 @@ export class VaizMCPProxyServer {
     if (error instanceof TypeError) return true;
     if (error instanceof Error) {
       const msg = error.message.toLowerCase();
-      return msg.includes('fetch') || msg.includes('network') ||
-        msg.includes('econnrefused') || msg.includes('econnreset') ||
-        msg.includes('etimedout') || msg.includes('socket') ||
-        msg.includes('abort');
+      return (
+        msg.includes('fetch') ||
+        msg.includes('network') ||
+        msg.includes('econnrefused') ||
+        msg.includes('econnreset') ||
+        msg.includes('etimedout') ||
+        msg.includes('socket') ||
+        msg.includes('abort')
+      );
     }
     return false;
   }
@@ -122,13 +180,12 @@ export class VaizMCPProxyServer {
     this.healthCheckTimer = setInterval(async () => {
       this.log('Health check: pinging API...');
       try {
-        // Try to re-initialize a fresh session
         const ok = await this.reinitializeSession();
         if (ok) {
           this.apiHealthy = true;
           this.stopHealthCheck();
-          this.logWarn('API is UP — notifying Cursor to refresh tools');
-          this.notifyToolsChanged();
+          this.logWarn('API is UP — notifying client to refresh tools');
+          this.mcpServer.sendToolListChanged();
         }
       } catch {
         this.log('Health check: API still unreachable');
@@ -143,23 +200,9 @@ export class VaizMCPProxyServer {
     }
   }
 
-  /** Tell Cursor to re-fetch tools/list */
-  private notifyToolsChanged(): void {
-    this.log('Sending notifications/tools/list_changed to Cursor');
-    this.sendResponse({
-      jsonrpc: '2.0',
-      method: 'notifications/tools/list_changed',
-    });
-  }
-
-  /**
-   * Establish a fresh session with the remote API.
-   * Sends initialize + notifications/initialized.
-   */
   private async reinitializeSession(): Promise<boolean> {
     this.log('Re-initializing session...');
     this.sessionId = null;
-    this.initialized = false;
 
     const initRequest: MCPRequest = {
       jsonrpc: '2.0',
@@ -185,7 +228,9 @@ export class VaizMCPProxyServer {
 
     if (!response.ok) {
       const body = await response.text().catch(() => '');
-      this.logError(`Re-init HTTP ${response.status}: ${body.slice(0, 200)}`);
+      this.logError(
+        `Re-init HTTP ${response.status}: ${body.slice(0, 200)}`,
+      );
       return false;
     }
 
@@ -203,44 +248,48 @@ export class VaizMCPProxyServer {
           if (line.startsWith('data: ')) {
             const data = line.slice(6).trim();
             if (data) {
-              const parsed = JSON.parse(data) as MCPResponse;
-              if (parsed.result) {
-                this.responseCache.set('initialize', parsed);
-              }
+              JSON.parse(data);
               break;
             }
           }
         }
       } else {
-        const result = await response.json() as MCPResponse;
-        if (result.result) {
-          this.responseCache.set('initialize', result);
-        }
+        await response.json();
       }
     } catch (err) {
-      this.logWarn(`Re-init: response parse error: ${err instanceof Error ? err.message : err}`);
+      this.logWarn(
+        `Re-init: response parse error: ${err instanceof Error ? err.message : err}`,
+      );
     }
 
-    // Fire notifications/initialized using standard headers with the NEW session ID
     await fetch(this.apiUrl, {
       method: 'POST',
       headers: this.getHeaders(),
-      body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'notifications/initialized',
+      }),
     }).catch(() => {});
 
-    this.initialized = true;
     this.logWarn('Session re-initialized OK');
     return true;
   }
 
-  // ── main proxy logic ─────────────────────────────────────
+  // ── remote proxy with retry ──────────────────────────────
 
-  private async proxyRequest(request: MCPRequest): Promise<void> {
-    this.log(`← ${request.method} (id=${request.id})`);
+  private async proxyToRemote(
+    method: string,
+    params?: Record<string, unknown>,
+  ): Promise<unknown> {
+    const request: MCPRequest = {
+      jsonrpc: '2.0',
+      id: `proxy_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      method,
+      params,
+    };
 
-    // Remember init params for future re-init
-    if (request.method === 'initialize' && request.params) {
-      this.lastInitParams = request.params;
+    if (method === 'initialize' && params) {
+      this.lastInitParams = params;
     }
 
     let lastError: string | undefined;
@@ -260,28 +309,34 @@ export class VaizMCPProxyServer {
           body: JSON.stringify(request),
         });
 
-        // Capture session
         const sid = response.headers.get('Mcp-Session-Id');
         if (sid) {
           this.sessionId = sid;
           this.log(`  session: ${sid}`);
         }
 
-        // ── HTTP error ──
         if (!response.ok) {
           const body = await response.text();
-          this.logError(`  HTTP ${response.status}: ${body.slice(0, 200)}`);
+          this.logError(
+            `  HTTP ${response.status}: ${body.slice(0, 200)}`,
+          );
 
-          // 429 Too Many Sessions — server needs time to reclaim dead sessions.
-          // Use Retry-After header hint + jitter, allow more retries.
           if (response.status === 429) {
             maxAttempts = MAX_RETRIES_429;
             if (attempt < maxAttempts) {
-              const retryAfter = parseInt(response.headers.get('Retry-After') || '', 10);
-              const baseDelay = (retryAfter && retryAfter > 0) ? retryAfter * 1000 : RETRY_DELAY_429_MS;
+              const retryAfter = parseInt(
+                response.headers.get('Retry-After') || '',
+                10,
+              );
+              const baseDelay =
+                retryAfter && retryAfter > 0
+                  ? retryAfter * 1000
+                  : RETRY_DELAY_429_MS;
               const jitter = Math.random() * 1000;
               const delay = Math.min(baseDelay + jitter, MAX_RETRY_DELAY_MS);
-              this.log(`  429 — waiting ${Math.round(delay)}ms before retry (Retry-After: ${retryAfter || 'none'})`);
+              this.log(
+                `  429 — waiting ${Math.round(delay)}ms before retry`,
+              );
               await this.sleep(delay);
               lastError = `HTTP 429`;
               continue;
@@ -290,22 +345,21 @@ export class VaizMCPProxyServer {
             break;
           }
 
-          // Retryable server error (5xx)
-          if (this.isRetryableStatus(response.status) && attempt < maxAttempts) {
+          if (
+            this.isRetryableStatus(response.status) &&
+            attempt < maxAttempts
+          ) {
             lastError = `HTTP ${response.status}`;
             continue;
           }
 
-          // Possibly stale session — re-initialize to get new session ID, then retry
-          if ((response.status === 400 || response.status === 404) && attempt < maxAttempts) {
+          if (
+            (response.status === 400 || response.status === 404) &&
+            attempt < maxAttempts
+          ) {
             this.logWarn('Possible stale session — re-initializing');
             try {
-              const ok = await this.reinitializeSession();
-              if (ok) {
-                this.logWarn('Session re-initialized, retrying request');
-              } else {
-                this.logWarn('Re-init failed, will retry');
-              }
+              await this.reinitializeSession();
             } catch {
               this.logWarn('Re-init threw, will retry');
             }
@@ -313,40 +367,38 @@ export class VaizMCPProxyServer {
             continue;
           }
 
-          // Non-retryable
           lastError = `HTTP ${response.status}: ${response.statusText}`;
           break;
         }
 
         // ── Success ──
-        // Mark API as healthy if it was down
         if (!this.apiHealthy) {
           this.apiHealthy = true;
           this.stopHealthCheck();
           this.logWarn('API is back (via successful request)');
-          if (request.method !== 'tools/list') {
-            this.notifyToolsChanged();
+          if (method !== 'tools/list') {
+            this.mcpServer.sendToolListChanged();
           }
         }
 
         const contentType = response.headers.get('content-type') || '';
 
         if (contentType.includes('text/event-stream')) {
-          await this.handleSSEResponse(response, request.id, request.method);
-          return;
+          return await this.parseSSEResult(response, request.id, method);
         }
 
-        const result = await response.json() as MCPResponse;
+        const result = (await response.json()) as MCPResponse;
 
-        // Cache critical methods
-        if ((request.method === 'initialize' || request.method === 'tools/list') && result.result) {
-          this.responseCache.set(request.method, result);
-          this.log(`  cached ${request.method}`);
+        if (result.result) {
+          this.responseCache.set(method, result.result);
+          this.log(`  cached ${method}`);
         }
 
-        this.sendResponse(result);
-        return;
+        if (result.error) {
+          throw new Error(result.error.message);
+        }
 
+        return result.result;
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         this.logError(`  attempt ${attempt + 1} failed: ${msg}`);
@@ -362,69 +414,28 @@ export class VaizMCPProxyServer {
       }
     }
 
-    // ── All retries failed ──
-    this.logWarn(`${request.method} failed after retries: ${lastError}`);
+    this.logWarn(`${method} failed after retries: ${lastError}`);
     this.markApiDown();
 
-    // tools/list and initialize: ALWAYS return cached, NEVER return error
-    if (request.method === 'tools/list') {
-      const cached = this.responseCache.get('tools/list');
-      if (cached) {
-        this.logWarn('Serving cached tools/list (API unavailable)');
-        this.sendResponse({ ...cached, id: request.id });
-      } else {
-        // No cache yet — return empty tools (better than error)
-        this.logWarn('No cached tools/list — returning empty tools');
-        this.sendResponse({
-          jsonrpc: '2.0',
-          id: request.id,
-          result: { tools: [] },
-        });
-      }
-      return;
+    const cached = this.responseCache.get(method);
+    if (cached) {
+      this.logWarn(`Serving cached ${method} (API unavailable)`);
+      return cached;
     }
 
-    if (request.method === 'initialize') {
-      const cached = this.responseCache.get('initialize');
-      if (cached) {
-        this.logWarn('Serving cached initialize (API unavailable)');
-        this.sendResponse({ ...cached, id: request.id });
-        return;
-      }
-    }
-
-    // Everything else — return error
-    this.sendResponse({
-      jsonrpc: '2.0',
-      id: request.id,
-      error: {
-        code: -32000,
-        message: `API unavailable: ${lastError}`,
-      },
-    });
+    throw new Error(`API unavailable: ${lastError}`);
   }
 
-  private async handleSSEResponse(
+  private async parseSSEResult(
     response: Response,
     requestId: string | number,
-    method: string
-  ): Promise<void> {
+    method: string,
+  ): Promise<unknown> {
     const reader = response.body?.getReader();
-    if (!reader) {
-      this.sendResponse({
-        jsonrpc: '2.0',
-        id: requestId,
-        error: {
-          code: -32000,
-          message: 'No response body available',
-        },
-      });
-      return;
-    }
+    if (!reader) throw new Error('No response body available');
 
     const decoder = new TextDecoder();
     let buffer = '';
-    let responseSent = false;
 
     try {
       while (true) {
@@ -440,18 +451,21 @@ export class VaizMCPProxyServer {
             const data = line.slice(6).trim();
             if (data && data !== '[DONE]') {
               try {
-                const parsed = JSON.parse(data);
-                this.sendResponse(parsed);
+                const parsed = JSON.parse(data) as MCPResponse;
                 if ('id' in parsed && parsed.id === requestId) {
-                  responseSent = true;
-                  // Cache SSE responses for critical methods
-                  if ((method === 'tools/list' || method === 'initialize') && parsed.result) {
-                    this.responseCache.set(method, parsed);
+                  if (parsed.result) {
+                    this.responseCache.set(method, parsed.result);
                     this.log(`  cached ${method} (from SSE)`);
                   }
+                  if (parsed.error) {
+                    throw new Error(parsed.error.message);
+                  }
+                  return parsed.result;
                 }
-              } catch {
-                // Skip invalid JSON lines
+              } catch (e) {
+                if (e instanceof Error && e.message !== 'Unexpected end of JSON input') {
+                  throw e;
+                }
               }
             }
           }
@@ -461,101 +475,140 @@ export class VaizMCPProxyServer {
       reader.releaseLock();
     }
 
-    if (!responseSent) {
-      this.sendResponse({
-        jsonrpc: '2.0',
-        id: requestId,
-        error: {
-          code: -32000,
-          message: 'No valid response received from SSE stream',
-        },
-      });
-    }
+    throw new Error('No valid response received from SSE stream');
   }
 
-  private handleNotification(notification: MCPNotification): void {
-    this.log(`← Notification: ${JSON.stringify(notification)}`);
-    
-    // Handle initialized notification
-    if (notification.method === 'notifications/initialized') {
-      this.initialized = true;
-      this.log('Client initialized');
-    }
-    
-    // Forward notifications to the remote server (fire-and-forget)
-    fetch(this.apiUrl, {
-      method: 'POST',
-      headers: this.getHeaders(),
-      body: JSON.stringify(notification),
-    }).catch((error) => {
-      this.log(`Failed to forward notification: ${error}`);
-    });
-  }
+  // ── handler registration ─────────────────────────────────
 
-  /**
-   * Start the proxy server, listening on stdin and writing to stdout
-   */
-  start(): void {
-    this.log(`Starting Vaiz MCP proxy server`);
-    this.log(`API URL: ${this.apiUrl}`);
-    this.log(`Space ID: ${this.spaceId ?? '(not set)'}`);
+  private registerHandlers(): void {
+    const lowLevel = this.mcpServer.server;
 
-    this.rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-      terminal: false,
-    });
-
-    this.rl.on('line', async (line) => {
-      if (!line.trim()) return;
-
+    lowLevel.setRequestHandler(ListToolsRequestSchema, async () => {
+      this.log('← tools/list');
       try {
-        const message = JSON.parse(line);
-
-        // Check if it's a request (has 'id') or notification (no 'id')
-        if ('id' in message) {
-          await this.proxyRequest(message as MCPRequest);
-        } else {
-          this.handleNotification(message as MCPNotification);
-        }
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        this.logError(`Failed to parse message: ${errorMessage}`);
-        this.logError(`Raw message: ${line}`);
+        const result = (await this.proxyToRemote('tools/list')) as {
+          tools?: Tool[];
+        };
+        const remoteTools = result?.tools ?? [];
+        return { tools: mergeByName(VAIZ_TOOLS, remoteTools) };
+      } catch {
+        this.logWarn('tools/list: using hardcoded + cached tools');
+        const cached = this.responseCache.get('tools/list') as {
+          tools?: Tool[];
+        } | undefined;
+        return {
+          tools: mergeByName(VAIZ_TOOLS, cached?.tools ?? []),
+        };
       }
     });
 
-    this.rl.on('close', () => {
-      this.log('stdin closed, shutting down');
-      process.exit(0);
+    lowLevel.setRequestHandler(CallToolRequestSchema, async (request) => {
+      this.log(`← tools/call ${request.params.name}`);
+      const result = await this.proxyToRemote('tools/call', request.params);
+      return result as { content: Array<{ type: string; text: string }> };
     });
 
-    process.on('SIGINT', () => {
+    lowLevel.setRequestHandler(ListPromptsRequestSchema, async () => {
+      this.log('← prompts/list');
+      try {
+        const result = (await this.proxyToRemote('prompts/list')) as {
+          prompts?: Prompt[];
+        };
+        const remotePrompts = result?.prompts ?? [];
+        return { prompts: mergeByName(VAIZ_PROMPTS, remotePrompts) };
+      } catch {
+        this.logWarn('prompts/list: using hardcoded + cached prompts');
+        const cached = this.responseCache.get('prompts/list') as {
+          prompts?: Prompt[];
+        } | undefined;
+        return {
+          prompts: mergeByName(VAIZ_PROMPTS, cached?.prompts ?? []),
+        };
+      }
+    });
+
+    lowLevel.setRequestHandler(GetPromptRequestSchema, async (request) => {
+      this.log(`← prompts/get ${request.params.name}`);
+      const result = await this.proxyToRemote('prompts/get', request.params);
+      return result as {
+        description?: string;
+        messages: Array<{
+          role: 'user' | 'assistant';
+          content: { type: string; text: string };
+        }>;
+      };
+    });
+
+    lowLevel.setRequestHandler(
+      ListResourcesRequestSchema,
+      async () => {
+        this.log('← resources/list');
+        try {
+          const result = (await this.proxyToRemote('resources/list')) as {
+            resources?: Resource[];
+          };
+          const remoteResources = result?.resources ?? [];
+          return { resources: mergeByUri(VAIZ_RESOURCES, remoteResources) };
+        } catch {
+          this.logWarn('resources/list: using hardcoded + cached resources');
+          const cached = this.responseCache.get('resources/list') as {
+            resources?: Resource[];
+          } | undefined;
+          return {
+            resources: mergeByUri(VAIZ_RESOURCES, cached?.resources ?? []),
+          };
+        }
+      },
+    );
+
+    lowLevel.setRequestHandler(
+      ReadResourceRequestSchema,
+      async (request) => {
+        this.log(`← resources/read ${request.params.uri}`);
+        const result = await this.proxyToRemote(
+          'resources/read',
+          request.params,
+        );
+        return result as {
+          contents: Array<{ uri: string; text?: string; mimeType?: string }>;
+        };
+      },
+    );
+  }
+
+  // ── lifecycle ────────────────────────────────────────────
+
+  async start(): Promise<void> {
+    this.log('Starting Vaiz MCP proxy server');
+    this.log(`API URL: ${this.apiUrl}`);
+    this.log(`Space ID: ${this.spaceId ?? '(not set)'}`);
+
+    this.transport = new StdioServerTransport();
+    await this.mcpServer.connect(this.transport);
+
+    this.log('Server connected via stdio transport');
+
+    process.on('SIGINT', async () => {
       this.log('Received SIGINT, shutting down');
+      await this.stop();
       process.exit(0);
     });
 
-    process.on('SIGTERM', () => {
+    process.on('SIGTERM', async () => {
       this.log('Received SIGTERM, shutting down');
+      await this.stop();
       process.exit(0);
     });
   }
 
-  /**
-   * Stop the proxy server
-   */
-  stop(): void {
+  async stop(): Promise<void> {
     this.stopHealthCheck();
-    if (this.rl) {
-      this.rl.close();
-      this.rl = null;
-    }
+    await this.mcpServer.close();
   }
 }
 
 export function createVaizMCPProxyServer(
-  config?: VaizConfig & { debug?: boolean }
+  config?: VaizConfig & { debug?: boolean },
 ): VaizMCPProxyServer {
   return new VaizMCPProxyServer(config);
 }
-
