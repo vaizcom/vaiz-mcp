@@ -63,7 +63,7 @@ function printVersion(): void {
   console.log(`vaiz-mcp v${getVersion()}`);
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const args = process.argv.slice(2);
 
   if (args.includes('--help') || args.includes('-h')) {
@@ -76,7 +76,6 @@ function main(): void {
     process.exit(0);
   }
 
-  // Check for required environment variables
   if (!process.env.VAIZ_API_TOKEN) {
     console.error('Error: VAIZ_API_TOKEN environment variable is required');
     console.error('Run "vaiz-mcp --help" for usage information');
@@ -84,7 +83,10 @@ function main(): void {
   }
 
   const server = createVaizMCPProxyServer();
-  server.start();
+  await server.start();
 }
 
-main();
+main().catch((error) => {
+  console.error('Fatal error:', error);
+  process.exit(1);
+});
