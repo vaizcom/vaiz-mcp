@@ -61,7 +61,7 @@ function mergeByUri(
  * MCP Proxy Server that forwards stdio JSON-RPC messages to Vaiz HTTP MCP API.
  *
  * Uses the official MCP SDK with explicit handler registrations so that static
- * analysers (e.g. LobeHub) can discover tool / prompt definitions in source.
+ * analysers can discover tool / prompt definitions in source.
  *
  * Resilience strategy:
  * - Retry with exponential backoff on transient errors
