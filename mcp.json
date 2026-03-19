@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "vaiz": {
+      "command": "npx",
+      "args": ["-y", "vaiz-mcp@latest"],
+      "env": {
+        "VAIZ_API_TOKEN": "${VAIZ_API_TOKEN}",
+        "VAIZ_SPACE_ID": "${VAIZ_SPACE_ID}"
+      }
+    }
+  }
+}
