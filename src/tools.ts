@@ -147,7 +147,8 @@ Examples:
   },
   {
     name: 'get_task_comments',
-    description: 'Get all comments for a specific task',
+    description:
+      'Get all comments for a specific task by database ID or HRID (e.g., "PRJ-123")',
     inputSchema: {
       type: 'object',
       properties: {
@@ -159,7 +160,8 @@ Examples:
   },
   {
     name: 'create_task_comment',
-    description: 'Create a new comment on a task',
+    description:
+      'Create a new comment on a task by database ID or HRID (e.g., "PRJ-123")',
     inputSchema: {
       type: 'object',
       properties: {
@@ -192,7 +194,7 @@ Examples:
   {
     name: 'set_task_blocker',
     description:
-      'Toggle a blocker relationship between two tasks. Direction is relative to taskId: "blockers" = tasks that block taskId, "blocking" = tasks that taskId blocks. Note: taskId and blockerTaskId require database IDs (use search to find tasks by HRID like "PRJ-21" to get their database IDs)',
+      'Toggle a blocker relationship between two tasks. Direction is relative to taskId: "blockers" = tasks that block taskId, "blocking" = tasks that taskId blocks. taskId and blockerTaskId accept database IDs or HRIDs (e.g. "PRJ-21").',
     inputSchema: {
       type: 'object',
       properties: {
