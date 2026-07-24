@@ -1,5 +1,7 @@
 # vaiz-mcp
 
+[![smithery badge](https://smithery.ai/badge/vaiz/vaiz)](https://smithery.ai/servers/vaiz/vaiz)
+
 MCP (Model Context Protocol) client for Vaiz — connect Cursor/Claude to your Vaiz workspace.
 
 ## Installation
