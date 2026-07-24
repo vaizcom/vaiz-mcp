@@ -1,0 +1,42 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "com.vaiz/mcp",
+  "description": "Connect AI assistants to your Vaiz workspace: tasks, projects, boards, documents and milestones.",
+  "repository": {
+    "url": "https://github.com/vaizcom/vaiz-mcp",
+    "source": "github"
+  },
+  "websiteUrl": "https://vaiz.com",
+  "version": "1.1.2",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "vaiz-mcp",
+      "version": "1.1.2",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "VAIZ_API_TOKEN",
+          "description": "Your Vaiz API key (Bearer token)",
+          "isRequired": true,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "VAIZ_SPACE_ID",
+          "description": "Your Vaiz Space ID",
+          "isRequired": false,
+          "format": "string"
+        },
+        {
+          "name": "VAIZ_API_URL",
+          "description": "Vaiz MCP API URL (default: https://api.vaiz.com/mcp)",
+          "isRequired": false,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}
