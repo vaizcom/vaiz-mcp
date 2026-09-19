@@ -1,5 +1,31 @@
 # vaiz-mcp
 
+> **DEPRECATED.** This package is no longer maintained and this repository is archived.
+>
+> Vaiz now provides a hosted MCP server at **`https://api.vaiz.com/mcp`** with OAuth. You no longer need a local `npx` proxy or a `VAIZ_API_TOKEN`.
+>
+> **Cursor users:** install the official **Vaiz** plugin from the Cursor Marketplace — https://github.com/vaizcom/vaiz-cursor-plugin
+>
+> **Any MCP client:** point it at the remote server directly.
+>
+> ```json
+> {
+>   "mcpServers": {
+>     "Vaiz": { "url": "https://api.vaiz.com/mcp" }
+>   }
+> }
+> ```
+>
+> Then authenticate when prompted (in Cursor: **Settings → Tools & MCPs → Authenticate**).
+>
+> Guide: https://vaiz.com/help/tutorials/how-to-connect-vaiz-to-mcp · Support: https://vaiz.com/support
+>
+> Existing installations of `vaiz-mcp` keep working for now, but will not receive updates or security fixes. Please migrate.
+
+---
+
+The original documentation is kept below for reference.
+
 [![smithery badge](https://smithery.ai/badge/vaiz/vaiz)](https://smithery.ai/servers/vaiz/vaiz)
 
 MCP (Model Context Protocol) client for Vaiz — connect Cursor/Claude to your Vaiz workspace.
